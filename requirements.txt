@@ -1,0 +1,9 @@
+transformers==4.50.0
+torch
+torchvision
+flash-attn
+trl
+bitsandbytes
+peft
+math_verify
+decord
