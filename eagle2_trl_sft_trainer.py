@@ -85,10 +85,19 @@ class Eagle2TRLSFTTrainer(SFTTrainer):
                     # Update the sample with the converted PIL Image object
                     sample["messages"][0]["content"][0]["image"] = pil_image
 
-            # Generate text using chat template
-            text = [processing_class.apply_chat_template(
+            # Build prompt-only and full texts to later mask non-answer tokens in labels
+            prompt_messages = copy.deepcopy(messages)
+            if len(prompt_messages) > 0 and prompt_messages[-1].get("role") == "assistant":
+                prompt_messages = prompt_messages[:-1]
+
+            full_text = processing_class.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=False
-            )]
+            )
+            prompt_text = processing_class.apply_chat_template(
+                prompt_messages, tokenize=False, add_generation_prompt=True
+            )
+
+            text = [full_text]
             
             # print("!@#$text:", text)
             # print("!@#$image_inputs:", image_inputs)
@@ -122,6 +131,26 @@ class Eagle2TRLSFTTrainer(SFTTrainer):
                         model_inputs["image_sizes"] = torch.tensor([[448, 448]])
                 
             model_inputs["labels"] = model_inputs["input_ids"].clone()
+
+            # Mask out prompt prefix tokens so only assistant answer contributes to loss
+            try:
+                prompt_tokenized = processing_class.tokenizer(
+                    prompt_text,
+                    return_tensors="pt"
+                )
+                prompt_len = prompt_tokenized.input_ids.shape[1]
+                model_inputs["labels"][..., :prompt_len] = -100
+            except Exception:
+                pass
+
+            # Additionally, mask image placeholder tokens in labels if present
+            try:
+                image_token_id = processing_class.tokenizer.convert_tokens_to_ids("<IMG_CONTEXT>")
+            except Exception:
+                image_token_id = 151667
+            if isinstance(image_token_id, int) and image_token_id != -1:
+                image_token_mask = model_inputs["input_ids"] == image_token_id
+                model_inputs["labels"][image_token_mask] = -100
             
             processed = {}
             for k, v in model_inputs.items():

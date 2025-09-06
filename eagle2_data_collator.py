@@ -46,6 +46,11 @@ class Eagle2DataCollator:
             'labels': torch.stack(padded_labels),
         }
 
+        # As a safeguard, mask out any image tokens in labels at batch time
+        if isinstance(self.image_token_id, int):
+            image_mask = (batch['input_ids'] == self.image_token_id)
+            batch['labels'][image_mask] = -100
+
         # Handle pixel_values and image_flags if present
         # Check if any feature has pixel_values (indicates image data is present)
         has_images = any('pixel_values' in feature for feature in features)
@@ -54,6 +59,7 @@ class Eagle2DataCollator:
             # Extract image-related data (with fallback for missing keys)
             pixel_values_list = []
             image_flags_list = []
+            image_sizes_list = []
             
             for feature in features:
                 if 'pixel_values' in feature:
@@ -67,6 +73,11 @@ class Eagle2DataCollator:
                 else:
                     # Create dummy image_flags (False = no real image)
                     image_flags_list.append(torch.tensor(False, dtype=torch.bool))
+
+                if 'image_sizes' in feature:
+                    image_sizes_list.append(feature['image_sizes'])
+                else:
+                    image_sizes_list.append(torch.tensor([448, 448]))
 
             # Stack and reshape pixel_values
             pixel_values_stacked = torch.stack(pixel_values_list)
@@ -84,6 +95,10 @@ class Eagle2DataCollator:
                 'pixel_values': pixel_values_reshaped,
                 'image_flags': image_flags_reshaped,
             })
+
+            # Attach image_sizes if gathered
+            if len(image_sizes_list) > 0:
+                batch['image_sizes'] = torch.stack(image_sizes_list)
             
             # # Handle image_sizes if present
             # if 'image_sizes' in features[0]:
