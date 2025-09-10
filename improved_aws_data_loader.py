@@ -47,9 +47,10 @@ class AWSVideoFrameExtractor:
         기존 형식: "fix_left-0.75-24.1s.jpg"
         """
         # 새로운 형식 파싱 (더 복잡한 형식)
-        # 패턴: view_episode_숫자_날짜_시간_해시_ratio_timestamp.jpg
+        # 패턴: view_episode_숫자_날짜_시간_해시_ratio_timestamp.jpg 또는 view_숫자_날짜_시간_해시_ratio_timestamp.jpg
         # view는 fix_center, ego_left, fix_right_1 등 다양한 형태 가능
-        new_pattern = r'([^_]+(?:_[^_]+)*?)_episode_\d+_\d+_\d+_[a-f0-9]+_([0-9.]+)_([0-9.]+)s\.jpg'
+        # episode_ 부분은 선택적 (있을 수도 없을 수도 있음)
+        new_pattern = r'([^_]+(?:_[^_]+)*?)_(?:episode_)?\d+_\d+_\d+_[a-f0-9]+_([0-9.]+)_([0-9.]+)s\.jpg'
         match = re.match(new_pattern, filename)
         
         if match:
@@ -70,16 +71,16 @@ class AWSVideoFrameExtractor:
         
         raise ValueError(f"파일명 형식이 올바르지 않습니다: {filename}")
     
-    def map_camera_name(self, view):
+    def map_s3_key_name(self, s3_key):
         """
-        카메라 명 매핑 함수
-        ego_leftside -> ego_left, ego_rightside -> ego_right 등의 변환
+        S3 키에서 카메라 명 매핑 함수
+        s3://bucket/path/episode_000064/ego_leftside.mp4 -> s3://bucket/path/episode_000064/ego_left.mp4
         
         Args:
-            view: 원본 카메라 뷰 이름
+            s3_key: S3 키 경로 (예: s3://configint-main/external_dataset/v1.0/fmb/episode_000064/ego_leftside.mp4)
             
         Returns:
-            str: 매핑된 카메라 뷰 이름
+            str: 카메라 명이 매핑된 S3 키
         """
         # 카메라 명 매핑 규칙
         camera_mapping = {
@@ -89,13 +90,21 @@ class AWSVideoFrameExtractor:
             # 'old_name': 'new_name',
         }
         
-        # 매핑된 이름이 있으면 반환, 없으면 원본 반환
-        mapped_view = camera_mapping.get(view, view)
+        # S3 키에서 파일명 추출
+        filename = s3_key.split('/')[-1]
+        file_extension = '.' + filename.split('.')[-1] if '.' in filename else ''
+        base_filename = filename.replace(file_extension, '')
         
-        if mapped_view != view:
-            logger.debug(f"카메라 명 매핑: {view} -> {mapped_view}")
+        # 매핑된 카메라 명이 있으면 교체
+        mapped_camera = camera_mapping.get(base_filename, base_filename)
         
-        return mapped_view
+        if mapped_camera != base_filename:
+            # S3 키에서 파일명 부분을 매핑된 이름으로 교체
+            mapped_s3_key = s3_key.replace(base_filename + file_extension, mapped_camera + file_extension)
+            logger.debug(f"카메라 명 매핑: {s3_key} -> {mapped_s3_key}")
+            return mapped_s3_key
+        
+        return s3_key
     
     def download_video(self, bucket_name, s3_key, local_path):
         """
@@ -307,53 +316,45 @@ class AWSVideoFrameExtractor:
                             if not current_views:
                                 logger.warning(f"시나리오 '{scenario}'의 views를 찾을 수 없습니다.")
                                 continue
-                            
-                            # 카메라 명 매핑 (ego_leftside -> ego_left, ego_rightside -> ego_right)
-                            mapped_view = self.map_camera_name(view)
-                            
-                            # S3에서 해당 뷰의 비디오 파일 경로
-                            if mapped_view not in current_views:
-                                # 원본 view명으로도 시도
-                                if view not in current_views:
-                                    logger.warning(f"시나리오 '{scenario}'에서 뷰 '{view}' (매핑: {mapped_view})를 찾을 수 없습니다.")
-                                    logger.debug(f"사용 가능한 뷰: {list(current_views.keys())}")
-                                    continue
-                                else:
-                                    video_s3_key = current_views[view]
-                                    logger.info(f"원본 뷰명 사용: {view}")
+                                                        
+                            # 원본 view명으로도 시도
+                            if view not in current_views:
+                                logger.debug(f"사용 가능한 뷰: {list(current_views.keys())}")
+                                continue
                             else:
-                                video_s3_key = current_views[mapped_view]
-                                logger.info(f"매핑된 뷰명 사용: {view} -> {mapped_view}")
-                            
-                            # 비디오 다운로드 (캐시 확인) - 시나리오별로 구분
-                            video_cache_key = f"{scenario}_{view}_{video_s3_key}"
-                            
-                            # 시나리오별로 비디오 파일명 생성 (에피소드 정보 포함)
-                            sequence = img_info.get('sequence', '')
-                            if sequence:
-                                episode_info = sequence.split('_')[-1] if '_' in sequence else 'unknown'
-                                video_local_path = os.path.join(temp_video_dir, f"{scenario}_{view}_{episode_info}.mp4")
-                            else:
-                                video_local_path = os.path.join(temp_video_dir, f"{scenario}_{view}.mp4")
-                            
-                            if video_cache_key not in downloaded_videos:
-                                if self.download_video(bucket_name, video_s3_key, video_local_path):
-                                    downloaded_videos[video_cache_key] = video_local_path
-                                    logger.info(f"비디오 다운로드 완료: {scenario}_{view}")
-                                else:
-                                    logger.error(f"비디오 다운로드 실패: {video_s3_key}")
-                                    continue
-                            else:
-                                video_local_path = downloaded_videos[video_cache_key]
-                            
+                                video_s3_key = current_views[view]                            
+
+                            mapped_video_s3_key = self.map_s3_key_name(video_s3_key)
+
                             # JSON에 지정된 경로 그대로 사용
                             image_output_path = original_path
                             
-                            # 이미 파일이 존재하는지 확인
+                            # 이미 파일이 존재하는지 먼저 확인
                             if os.path.exists(image_output_path):
                                 logger.info(f"이미지가 이미 존재함, 건너뜀: {image_output_path}")
                                 success = True
                             else:
+                                # 비디오 다운로드 (캐시 확인) - 시나리오별로 구분
+                                video_cache_key = f"{scenario}_{view}_{video_s3_key}"
+                                
+                                # 시나리오별로 비디오 파일명 생성 (에피소드 정보 포함)
+                                sequence = img_info.get('sequence', '')
+                                if sequence:
+                                    episode_info = sequence.split('_')[-1] if '_' in sequence else 'unknown'
+                                    video_local_path = os.path.join(temp_video_dir, f"{scenario}_{view}_{episode_info}.mp4")
+                                else:
+                                    video_local_path = os.path.join(temp_video_dir, f"{scenario}_{view}.mp4")
+                                
+                                if video_cache_key not in downloaded_videos:
+                                    if self.download_video(bucket_name, mapped_video_s3_key, video_local_path):
+                                        downloaded_videos[video_cache_key] = video_local_path
+                                        logger.info(f"비디오 다운로드 완료: {scenario}_{view}")
+                                    else:
+                                        logger.error(f"비디오 다운로드 실패: {mapped_video_s3_key}")
+                                        continue
+                                else:
+                                    video_local_path = downloaded_videos[video_cache_key]
+                                
                                 # 프레임 추출
                                 success = False
                                 if use_ffmpeg:
