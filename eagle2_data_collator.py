@@ -51,43 +51,68 @@ class Eagle2DataCollator:
             image_mask = (batch['input_ids'] == self.image_token_id)
             batch['labels'][image_mask] = -100
 
-        # Handle pixel_values and image_flags if present
-        # Check if any feature has pixel_values (indicates image data is present)
-        has_images = any('pixel_values' in feature for feature in features)
+        # Handle pixel_values and image_flags for zero, single, or multi-view per sample
+        # Determine the maximum number of views in the batch
+        max_num_views = 0
+        for feature in features:
+            if 'pixel_values' in feature:
+                pv = feature['pixel_values']
+                if isinstance(pv, torch.Tensor):
+                    if pv.dim() == 4:  # [N, C, H, W]
+                        max_num_views = max(max_num_views, pv.shape[0])
+                    elif pv.dim() == 3:  # [C, H, W]
+                        max_num_views = max(max_num_views, 1)
         
-        if has_images:
-            # Extract image-related data (with fallback for missing keys)
-            pixel_values_list = []
-            image_flags_list = []
-            
+        if max_num_views > 0:
+            # Prepare padded pixel_values: [B, N, C, H, W] and image_flags: [B, N]
+            padded_pixel_values = []
+            padded_image_flags = []
+
             for feature in features:
-                if 'pixel_values' in feature:
-                    pixel_values_list.append(feature['pixel_values'])
+                # Prepare per-sample pixel_values tensor of shape [n, C, H, W]
+                if 'pixel_values' in feature and isinstance(feature['pixel_values'], torch.Tensor):
+                    pv = feature['pixel_values']
+                    if pv.dim() == 4 and pv.shape[0] >= 1:
+                        per_sample_pv = pv
+                    elif pv.dim() == 3:
+                        per_sample_pv = pv.unsqueeze(0)
+                    else:
+                        per_sample_pv = torch.zeros(1, 3, 448, 448)
                 else:
-                    # Create dummy pixel_values for consistency
-                    pixel_values_list.append(torch.zeros(3, 448, 448))  # Adjust size as needed
-                    
-                if 'image_flags' in feature:
-                    image_flags_list.append(feature['image_flags'])
+                    per_sample_pv = torch.zeros(1, 3, 448, 448)
+
+                n, c, h, w = per_sample_pv.shape
+                pad_n = max_num_views - n
+                if pad_n > 0:
+                    pad_tensor = torch.zeros(pad_n, c, h, w)
+                    per_sample_pv = torch.cat([per_sample_pv, pad_tensor], dim=0)
+                padded_pixel_values.append(per_sample_pv)
+
+                # image_flags per sample: [n]
+                if 'image_flags' in feature and isinstance(feature['image_flags'], torch.Tensor):
+                    flags = feature['image_flags']
+                    if flags.dim() == 0:
+                        flags = flags.unsqueeze(0)
                 else:
-                    # Create dummy image_flags (False = no real image)
-                    image_flags_list.append(torch.tensor(False, dtype=torch.bool))
+                    flags = torch.zeros(n, dtype=torch.bool)
+                if flags.numel() < max_num_views:
+                    flags = torch.cat([flags, torch.zeros(max_num_views - flags.numel(), dtype=torch.bool)], dim=0)
+                elif flags.numel() > max_num_views:
+                    flags = flags[:max_num_views]
+                padded_image_flags.append(flags)
 
-            # Stack and reshape pixel_values
-            pixel_values_stacked = torch.stack(pixel_values_list)
-            b, c, h, w = pixel_values_stacked.shape
-            pixel_values_reshaped = pixel_values_stacked.view(b, c, h, w)
-
-            # Stack and reshape image_flags
-            image_flags_stacked = torch.stack(image_flags_list)  # shape: [b] or [b, t]
-            if image_flags_stacked.dim() == 1:
-                image_flags_reshaped = image_flags_stacked  # shape: [b]
-            else:
-                image_flags_reshaped = image_flags_stacked.view(b)  # shape: [b]
-
+            # Reshape pixel_values from [B, N, C, H, W] to [B*N, C, H, W] for the model
+            stacked_pixel_values = torch.stack(padded_pixel_values)  # [B, N, C, H, W]
+            batch_size, num_views, c, h, w = stacked_pixel_values.shape
+            reshaped_pixel_values = stacked_pixel_values.view(batch_size * num_views, c, h, w)  # [B*N, C, H, W]
+            
+            # Reshape image_flags from [B, N] to [B*N] to match pixel_values
+            stacked_image_flags = torch.stack(padded_image_flags)  # [B, N]
+            reshaped_image_flags = stacked_image_flags.view(batch_size * num_views)  # [B*N]
+            
             batch.update({
-                'pixel_values': pixel_values_reshaped,
-                'image_flags': image_flags_reshaped,
+                'pixel_values': reshaped_pixel_values,              # [B*N, C, H, W]
+                'image_flags': reshaped_image_flags,                # [B*N]
             })
         
         return batch
