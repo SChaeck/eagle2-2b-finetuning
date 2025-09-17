@@ -1,9 +1,9 @@
-transformers==4.50.0
+transformers==4.50.0 vllm
 torch
 torchvision
 flash-attn
 trl
-bitsandbytes
+bitsandbytes 
 peft
 math_verify
 decord

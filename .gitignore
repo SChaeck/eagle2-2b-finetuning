@@ -2,4 +2,5 @@
 wandb
 __pycache__
 eagle2-2b-trl-sft-Multitask*
+eagle2-2b-trl-grpo-Multitask*
 Multiview_processed_datasets

@@ -105,6 +105,12 @@ class Eagle2TRLSFTTrainer(SFTTrainer):
                         if newline_between_blocks and message["role"] == "user":
                             content_item["text"] = "\n" + content_item["text"] + " "
                             
+            # image_inputs, video_inputs = processing_class.process_vision_info(messages)
+            # full_text = processing_class.apply_chat_template
+            # model_inputs = processing_class(text=text, images=image_inputs, videos=None, return_tensors="pt")
+            # masking
+            # shape normalization
+                            
             if has_any_image:
                 # Let the processor build image_inputs (handles multi-view)
                 image_inputs, video_inputs = processing_class.process_vision_info(messages)
